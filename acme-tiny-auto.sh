@@ -32,7 +32,7 @@ function is_cert_fingerprint(){ # SHA256, e.g. 25:84:7D:66:8E:...
   fi
   return 1
 }
-function is_cert_renewable(){
+function is_domaincert_renewable(){
   local DOMAIN=$1
 
   local EXPDATE=$( openssl x509 -enddate -noout -in "$DIR/domains/$DOMAIN/domain.crt" | sed -e 's/^notAfter=//' )
@@ -40,12 +40,12 @@ function is_cert_renewable(){
   local DIFFTS=$(( ( EXPTS - $(date -u +"%s") ) / 86400 ))
 
   if [[ "$DIFFTS" -gt "7" ]]; then # more than 7 days to expiration: no need to renew
-    return 1
+    return 0 #1
   else
     return 0
   fi
 }
-function renew_cert(){
+function renew_domaincert(){
   local DOMAIN=$1
   local NOISY=$2
 
@@ -53,7 +53,7 @@ function renew_cert(){
   if [[ "$NOISY" == "noisy" ]]; then
     python acme_tiny.py --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
   else
-    python acme_tiny.py --quiet --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
+    python acme_tiny.py --quiet --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" 2>/dev/null > "$DIR/domains/$DOMAIN/new.crt"
   fi
   RETVAL=$?
   if [[ "$RETVAL" -ne "0" ]]; then
@@ -165,9 +165,9 @@ function do_add(){
 
   # Get the certificate
   echo "Request certificate..." >&2
-  renew_cert "$DOMAIN" "noisy" || exit 10
+  renew_domaincert "$DOMAIN" "noisy" || exit 10
   
-  echo "SUCCESS!" >&2
+  echo "SUCCESS! (remark: we did NOT notify the webserver of the new certificate)" >&2
   trap - EXIT
   exit 0
 }
@@ -177,9 +177,9 @@ function do_forcerenew(){
   
   # Get the certificate
   echo "Request certificate..." >&2
-  renew_cert "$DOMAIN" "noisy" || exit 10
+  renew_domaincert "$DOMAIN" "noisy" || exit 10
   
-  echo "SUCCESS!" >&2
+  echo "SUCCESS! (remark: we did NOT notify the webserver of the new certificate)" >&2
   trap - EXIT
   exit 0
 }
@@ -187,13 +187,13 @@ function do_autorenew(){
   local DOMAIN=$1
 
   # We expect to have an existing certificate (would be weird otherwise... not a normal case for automatic jobs)
-  is_cert "$DOMAIN" || exit 20
+  is_cert "$DIR/domains/$DOMAIN/domain.crt" || exit 20
 
   # Check if the certificate is still valid long enough
-  is_cert_renewable "$DOMAIN" || exit 0
+  is_domaincert_renewable "$DOMAIN" || exit 0
 
   # If not, attempt to renew it
-  renew_cert "$DOMAIN" || exit 10
+  renew_domaincert "$DOMAIN" || exit 10
 }
 
 # Main program
@@ -220,7 +220,7 @@ if [[ "$?" -ne "0" ]]; then
 fi
 
 #TODO: at the end of any operation that generated a (valid) cert, we should call the user function to apply the changes
-#TODO: make the user function optional?
+#TODO: make the user function optional? or maybe call it just for renew / renew-all?
 
 # Command line parsing
 case "$1" in
@@ -240,7 +240,7 @@ case "$1" in
       exit 1
     fi
     
-    do_auto_renew "$2"
+    do_autorenew "$2"
     ;;
     
   "renew-all")
