@@ -12,6 +12,8 @@ function noisy_write(){
   fi
 }
 
+NBRENEWED=0
+
 # Helpers: certificates
 # ---------------------
 
@@ -77,8 +79,26 @@ function renew_domaincert(){
 
   # If all is good, we can replace the current certificate
   cat "$DIR/domains/$DOMAIN/new.crt" "$DIR/intermediate.crt" > "$DIR/domains/$DOMAIN/domain.crt"
+  
+  # Increment the counter of renewed certificates
+  NBRENEWED=$(( NBRENEWED + 1 ))
 
   return 0
+}
+
+# Helpers: RSA keys
+# -----------------
+
+function is_key(){
+  local RSA=$1
+  openssl rsa -inform PEM -in "$RSA" -noout 2>/dev/null
+  return $?
+}
+function generate_key(){
+  local TARGET=$1
+  openssl genrsa 4096 2>/dev/null > "${TARGET}.tmp"
+  is_key "${TARGET}.tmp" || exit 10
+  mv "${TARGET}.tmp" "$TARGET"
 }
 
 # Helpers: external downloads
@@ -100,21 +120,6 @@ function download_acme_tiny(){
   if [[ "$SHASUM" != "bcd7cb56c280543c929cb4b7b2d1ed2d7ebabdae74fedc96b6a63f218c0b8ace" ]]; then
     exit 10
   fi
-  mv "${TARGET}.tmp" "$TARGET"
-}
-
-# Helpers: RSA keys
-# -----------------
-
-function is_key(){
-  local RSA=$1
-  openssl rsa -inform PEM -in "$RSA" -noout 2>/dev/null
-  return $?
-}
-function generate_key(){
-  local TARGET=$1
-  openssl genrsa 4096 2>/dev/null > "${TARGET}.tmp"
-  is_key "${TARGET}.tmp" || exit 10
   mv "${TARGET}.tmp" "$TARGET"
 }
 
@@ -194,18 +199,31 @@ function do_autorenew(){
 
   # If not, attempt to renew it
   renew_domaincert "$DOMAIN" || exit 10
+  
+  # Note: we don't exit on success because we might have more domains to check & renew
+}
+function do_user_refresh(){
+  if [[ "$NBRENEWED" -gt "0" ]]; then # At least 1 certificate renewed
+    type -t "apply_new_cert" 2>/dev/null | grep -q 'function' # grep -q returns 0 if there is a match
+    if [[ "$?" -eq "0" ]]; then
+      apply_new_cert
+      exit $?
+    fi
+  fi
+  exit 0
 }
 
 # Main program
 # ------------
 function print_usage(){
-  echo "Usage: $0 [init | add <domain> | renew <domain> | force-renew <domain> | renew-all ]" >&2
+  echo "Usage: $0 [init | add [domain]| renew [domain] | force-renew [domain] | renew-all ]" >&2
+  echo "Note that renew and renew-all are quiet by default, and will only write to STDERR (and return > 0) on failure." >&2
 }
 
 # Configuration file validation
 if [[ ! -f "$DIR/config.sh" ]]; then
   echo "Missing config.sh! You must create it before using this script." >&2
-  echo -e "\nSample file:\n-----------------------------------\n# This should be the webroot for challenges. If you don't rewrite URLs it should contain /.well-known/acme-challenge/ (and these folders should exist)\nWELLKNOWNROOT=/www/challenges/shared/.well-known/acme-challenge/\n\n# This is the function to be called if at least one certificate has been changed\nfunction apply_new_cert(){\n  # SIGHUP nginx\n  kill -HUP \$( cat /run/nginx.pid )\n}\n-----------------------------------\n"
+  echo -e "\nSample file:\n-----------------------------------\n# This should be the webroot for challenges. If you don't rewrite URLs it should contain /.well-known/acme-challenge/ (and these folders should exist)\nWELLKNOWNROOT=/www/challenges/shared/.well-known/acme-challenge/\n\n# (optional) This is the function to be called if at least one certificate has been changed (renew, renew-all only)\nfunction apply_new_cert(){\n  # SIGHUP nginx\n  kill -HUP \$( cat /run/nginx.pid )\n}\n-----------------------------------\n"
   exit 1
 fi
 source "$DIR/config.sh"
@@ -213,20 +231,12 @@ if [[ ! -d "$WELLKNOWNROOT" ]]; then
   echo "The WELLKNOWNROOT path listed in config.sh does not exist!" >&2
   exit 1
 fi
-type -t "apply_new_cert" 2>/dev/null | grep -q 'function'
-if [[ "$?" -ne "0" ]]; then
-  echo "There is no apply_new_cert function in config.sh!" >&2
-  exit 1
-fi
-
-#TODO: at the end of any operation that generated a (valid) cert, we should call the user function to apply the changes
-#TODO: make the user function optional? or maybe call it just for renew / renew-all?
 
 # Command line parsing
 case "$1" in
 
-  # "Quiet" commands (good for cron usage)
-  #TODO: trap EXIT and call a (optional) user defined function for alerting on failure
+  ## "Quiet" commands (good for cron usage) ##
+  
   "renew")
     # Empty domain
     if [[ -z "$2" ]]; then
@@ -241,16 +251,30 @@ case "$1" in
     fi
     
     do_autorenew "$2"
+    
+    # Call user function if needed
+    do_user_refresh
     ;;
     
   "renew-all")
-    echo "" 
-    #TODO 
-    # Idea is to list all folders under $DIR/domains and call the "renew" step on them
-    # On failure it will just exit and leave the job half done (it's a feature!)
+    # Find all domains
+    OLDIFS=$IFS
+    IFS=$'\n'
+    DOMS=($( find "${DIR}/domains/" -maxdepth 1 -type d ))
+    IFS=$OLDIFS
+    
+    # For each domain check if there is a do_not_renew file
+    for DOM in "${DOMS[@]}"; do
+      if [[ ! -f "${DIR}/domains/$DOM/do_not_renew" ]]; then
+        do_autorenew "$DOM"
+      fi
+    done
+    
+    # Call user function if needed
+    do_user_refresh
     ;;
     
-  # "Noisy" commands (for humans)
+  ## "Noisy" commands (for humans) ##
   
   "init") 
     # Account key already exists
