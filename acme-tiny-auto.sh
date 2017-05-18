@@ -1,7 +1,9 @@
 #!/bin/bash
 DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 
-umask 077 # Restrict all created files to this user
+# Set restrictive umask, but keep a copy of the old one to be able to reapply it when calling acme_tiny.py
+UMASK=$( umask -S )
+umask g=,o=
 
 function noisy_fail(){
   echo "FAILED!" >&2
@@ -12,6 +14,7 @@ function noisy_write(){
   fi
 }
 
+# Keep track of the number of generated certificates, to see if it is needed to reload the webserver
 NBRENEWED=0
 
 # Helpers: certificates
@@ -42,7 +45,7 @@ function is_domaincert_renewable(){
   local DIFFTS=$(( ( EXPTS - $(date -u +"%s") ) / 86400 ))
 
   if [[ "$DIFFTS" -gt "7" ]]; then # more than 7 days to expiration: no need to renew
-    return 0 #1
+    return 1
   else
     return 0
   fi
@@ -52,12 +55,14 @@ function renew_domaincert(){
   local NOISY=$2
 
   # Call acme_tiny
+  umask "$UMASK"
   if [[ "$NOISY" == "noisy" ]]; then
     python acme_tiny.py --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
   else
     python acme_tiny.py --quiet --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" 2>/dev/null > "$DIR/domains/$DOMAIN/new.crt"
   fi
   RETVAL=$?
+  umask g=,o=
   if [[ "$RETVAL" -ne "0" ]]; then
     noisy_write "acme_tiny.py exited with code ${RETVAL}!" "$NOISY"
     return 1
@@ -188,20 +193,6 @@ function do_forcerenew(){
   trap - EXIT
   exit 0
 }
-function do_autorenew(){
-  local DOMAIN=$1
-
-  # We expect to have an existing certificate (would be weird otherwise... not a normal case for automatic jobs)
-  is_cert "$DIR/domains/$DOMAIN/domain.crt" || exit 20
-
-  # Check if the certificate is still valid long enough
-  is_domaincert_renewable "$DOMAIN" || exit 0
-
-  # If not, attempt to renew it
-  renew_domaincert "$DOMAIN" || exit 10
-  
-  # Note: we don't exit on success because we might have more domains to check & renew
-}
 function do_user_refresh(){
   if [[ "$NBRENEWED" -gt "0" ]]; then # At least 1 certificate renewed
     type -t "apply_new_cert" 2>/dev/null | grep -q 'function' # grep -q returns 0 if there is a match
@@ -250,7 +241,12 @@ case "$1" in
       exit 1
     fi
     
-    do_autorenew "$2"
+    # We expect to have an existing certificate (would be weird otherwise... not a normal case for automatic jobs)
+    is_cert "$DIR/domains/$2/domain.crt" || exit 20
+    # Check if the certificate is still valid long enough
+    is_domaincert_renewable "$2" || exit 0
+    # If not, attempt to renew it
+    renew_domaincert "$2" || exit 10
     
     # Call user function if needed
     do_user_refresh
@@ -260,13 +256,20 @@ case "$1" in
     # Find all domains
     OLDIFS=$IFS
     IFS=$'\n'
-    DOMS=($( find "${DIR}/domains/" -maxdepth 1 -type d ))
+    DOMS=($( find "${DIR}/domains/" -maxdepth 1 -type d -exec basename {} \; | grep -v ^domains$ ))
     IFS=$OLDIFS
     
     # For each domain check if there is a do_not_renew file
     for DOM in "${DOMS[@]}"; do
-      if [[ ! -f "${DIR}/domains/$DOM/do_not_renew" ]]; then
-        do_autorenew "$DOM"
+      if [[ ! -f "$DOM/do_not_renew" ]]; then
+      
+        # We expect to have an existing certificate (would be weird otherwise... not a normal case for automatic jobs)
+        is_cert "$DIR/domains/$DOM/domain.crt" || continue
+        # Check if the certificate is still valid long enough
+        is_domaincert_renewable "$DOM" || continue
+        # If not, attempt to renew it
+        renew_domaincert "$DOM"
+
       fi
     done
     
