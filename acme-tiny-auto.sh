@@ -120,9 +120,9 @@ function download_cert(){
 }
 function download_acme_tiny(){
   local TARGET=$1
-  curl -Ss "https://raw.githubusercontent.com/diafygi/acme-tiny/master/acme_tiny.py" > "${TARGET}.tmp"
+  curl -Ss "https://raw.githubusercontent.com/diafygi/acme-tiny/9537453586cd5124d5e4e46d78f9ed909180835d/acme_tiny.py" > "${TARGET}.tmp"
   local SHASUM=$( sha256sum "${TARGET}.tmp" | cut -f1 -d' ' )
-  if [[ "$SHASUM" != "bcd7cb56c280543c929cb4b7b2d1ed2d7ebabdae74fedc96b6a63f218c0b8ace" ]]; then
+  if [[ "$SHASUM" != "1abae6ea2045dd2490b8671c98e24bc82706df125fd171ce82b76d89c2bf3f46" ]]; then
     exit 10
   fi
   mv "${TARGET}.tmp" "$TARGET"
