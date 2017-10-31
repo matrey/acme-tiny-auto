@@ -57,9 +57,9 @@ function renew_domaincert(){
   # Call acme_tiny
   umask "$UMASK"
   if [[ "$NOISY" == "noisy" ]]; then
-    python acme_tiny.py --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
+    python "$DIR/acme_tiny.py" --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
   else
-    python acme_tiny.py --quiet --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" 2>/dev/null > "$DIR/domains/$DOMAIN/new.crt"
+    python "$DIR/acme_tiny.py" --quiet --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" 2>/dev/null > "$DIR/domains/$DOMAIN/new.crt"
   fi
   RETVAL=$?
   umask g=,o=
@@ -261,7 +261,7 @@ case "$1" in
     
     # For each domain check if there is a do_not_renew file
     for DOM in "${DOMS[@]}"; do
-      if [[ ! -f "$DOM/do_not_renew" ]]; then
+      if [[ ! -f "$DIR/domains/$DOM/do_not_renew" ]]; then
       
         # We expect to have an existing certificate (would be weird otherwise... not a normal case for automatic jobs)
         is_cert "$DIR/domains/$DOM/domain.crt" || continue
