@@ -106,3 +106,12 @@ It will automatically renew certificates for all domains under `domains`, no mor
 We finally get back to the `apply_new_cert` function in `config.sh`. It will be called at the end of `renew-all` if any certificate has been renewed. The objective is to send a signal to the webserver to load the new certificate.
 For Nginx, the following usually works well: `kill -HUP $( cat /run/nginx.pid )`
 
+## Stop renewing certificates for a domain
+
+You can put an empty "do_not_renew" file in the domain folder.
+
+e.g.
+```
+touch /acme/domains/example.com/do_not_renew
+```
+

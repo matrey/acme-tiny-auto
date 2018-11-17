@@ -21,13 +21,16 @@ NBRENEWED=0
 # ---------------------
 
 function is_cert(){
-  local CERT=$1
+  local CERT
+  CERT=$1
   openssl x509 -inform PEM -in "$CERT" -noout 2>/dev/null
   return $?
 }
 function is_cert_fingerprint(){ # SHA256, e.g. 25:84:7D:66:8E:...
-  local CERT=$1
-  local FINGERPRINT=$2
+  local CERT
+  local FINGERPRINT
+  CERT=$1
+  FINGERPRINT=$2
   if [[ "$FINGERPRINT" == "" ]]; then
     return 1
   fi
@@ -38,11 +41,16 @@ function is_cert_fingerprint(){ # SHA256, e.g. 25:84:7D:66:8E:...
   return 1
 }
 function is_domaincert_renewable(){
-  local DOMAIN=$1
+  local DOMAIN
+  local EXPDATE
+  local EXPTS
+  local DIFFTS
+  
+  DOMAIN=$1
 
-  local EXPDATE=$( openssl x509 -enddate -noout -in "$DIR/domains/$DOMAIN/domain.crt" | sed -e 's/^notAfter=//' )
-  local EXPTS=$( date -u --date "$EXPDATE" +"%s" )
-  local DIFFTS=$(( ( EXPTS - $(date -u +"%s") ) / 86400 ))
+  EXPDATE=$( openssl x509 -enddate -noout -in "$DIR/domains/$DOMAIN/domain.crt" | sed -e 's/^notAfter=//' )
+  EXPTS=$( date -u --date "$EXPDATE" +"%s" )
+  DIFFTS=$(( ( EXPTS - $(date -u +"%s") ) / 86400 ))
 
   if [[ "$DIFFTS" -gt "7" ]]; then # more than 7 days to expiration: no need to renew
     return 1
@@ -51,15 +59,31 @@ function is_domaincert_renewable(){
   fi
 }
 function renew_domaincert(){
-  local DOMAIN=$1
-  local NOISY=$2
+  local DOMAIN
+  local NOISY
+  DOMAIN=$1
+  NOISY=$2
+  
+  # Check if we already have an account key
+  if [[ ! -f "$DIR/account.key-tmp" ]]; then
+    # Generate an account key
+    generate_key "$DIR/account.key-tmp" 4096
+  fi
+  
+  # Generate a new domain key
+  echo "Generate domain key..." >&2
+  generate_key "$DIR/domains/$DOMAIN/new.key" 2048
 
+  # Generate CSR
+  echo "Generate CSR..." >&2
+  openssl req -new -sha256 -key "$DIR/domains/$DOMAIN/new.key" -subj "/CN=$DOMAIN" > "$DIR/domains/$DOMAIN/domain.csr"
+  
   # Call acme_tiny
   umask "$UMASK"
   if [[ "$NOISY" == "noisy" ]]; then
-    python "$DIR/acme_tiny.py" --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
+    python "$DIR/acme_tiny.py" --account-key "$DIR/account.key-tmp" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
   else
-    python "$DIR/acme_tiny.py" --quiet --account-key "$DIR/account.key" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" 2>/dev/null > "$DIR/domains/$DOMAIN/new.crt"
+    python "$DIR/acme_tiny.py" --quiet --account-key "$DIR/account.key-tmp" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" 2>/dev/null > "$DIR/domains/$DOMAIN/new.crt"
   fi
   RETVAL=$?
   umask g=,o=
@@ -70,6 +94,7 @@ function renew_domaincert(){
 
   # Verify the certificate is valid
   openssl x509 -inform PEM -in "$DIR/domains/$DOMAIN/new.crt" -noout 2>/dev/null
+  # shellcheck disable=SC2181
   if [[ "$?" -ne "0" ]]; then
     noisy_write "The payload we got back is not a certificate!" "$NOISY"
     return 1
@@ -77,13 +102,16 @@ function renew_domaincert(){
 
   # Also that it is issued by the expected intermediate
   openssl verify -untrusted "$DIR/intermediate.crt" "$DIR/domains/$DOMAIN/new.crt" >/dev/null
+  # shellcheck disable=SC2181
   if [[ "$?" -ne "0" ]]; then # This is not the intermediate we expected!
     noisy_write "The certificate we got back is not signed by the expected intermediate!" "$NOISY"
     return 1
   fi
 
-  # If all is good, we can replace the current certificate
-  cat "$DIR/domains/$DOMAIN/new.crt" "$DIR/intermediate.crt" > "$DIR/domains/$DOMAIN/domain.crt"
+  # If all is good, we can replace the current private key and certificate
+  cat "$DIR/domains/$DOMAIN/new.key" > "$DIR/domains/$DOMAIN/domain.key"
+  cat "$DIR/domains/$DOMAIN/new.crt" > "$DIR/domains/$DOMAIN/domain.crt"
+  rm -f "$DIR/domains/$DOMAIN/domain.csr"
   
   # Increment the counter of renewed certificates
   NBRENEWED=$(( NBRENEWED + 1 ))
@@ -95,13 +123,17 @@ function renew_domaincert(){
 # -----------------
 
 function is_key(){
-  local RSA=$1
+  local RSA
+  RSA=$1
   openssl rsa -inform PEM -in "$RSA" -noout 2>/dev/null
   return $?
 }
 function generate_key(){
-  local TARGET=$1
-  openssl genrsa 4096 2>/dev/null > "${TARGET}.tmp"
+  local TARGET
+  local BITS
+  TARGET=$1
+  BITS=$2
+  openssl genrsa "${BITS}" 2>/dev/null > "${TARGET}.tmp"
   is_key "${TARGET}.tmp" || exit 10
   mv "${TARGET}.tmp" "$TARGET"
 }
@@ -110,19 +142,24 @@ function generate_key(){
 # ---------------------------
 
 function download_cert(){ 
-  local URL=$1
-  local FINGERPRINT=$2
-  local TARGET=$3
+  local URL
+  local FINGERPRINT
+  local TARGET
+  URL=$1
+  FINGERPRINT=$2
+  TARGET=$3
   curl -Ss "$URL" > "${TARGET}.tmp"
   is_cert "${TARGET}.tmp" || exit 10
   is_cert_fingerprint "${TARGET}.tmp" "$FINGERPRINT" || exit 10
   mv "${TARGET}.tmp" "$TARGET"
 }
 function download_acme_tiny(){
-  local TARGET=$1
-  curl -Ss "https://raw.githubusercontent.com/diafygi/acme-tiny/9537453586cd5124d5e4e46d78f9ed909180835d/acme_tiny.py" > "${TARGET}.tmp"
-  local SHASUM=$( sha256sum "${TARGET}.tmp" | cut -f1 -d' ' )
-  if [[ "$SHASUM" != "1abae6ea2045dd2490b8671c98e24bc82706df125fd171ce82b76d89c2bf3f46" ]]; then
+  local TARGET
+  local SHASUM
+  TARGET=$1
+  curl -Ss "https://raw.githubusercontent.com/diafygi/acme-tiny/5350420d35177eda733d85096433a24e55f8d00e/acme_tiny.py" > "${TARGET}.tmp"
+  SHASUM=$( sha256sum "${TARGET}.tmp" | cut -f1 -d' ' )
+  if [[ "$SHASUM" != "ce2cdd1cd5a51545df6436db641f1f1055acc6cc33c44819f8085d2653ba359a" ]]; then
     exit 10
   fi
   mv "${TARGET}.tmp" "$TARGET"
@@ -147,10 +184,6 @@ function do_init(){
   echo "Download acme_tiny.py..." >&2
   download_acme_tiny "$DIR/acme_tiny.py"
 
-  # Generate an account key
-  echo "Generate account key..." >&2
-  generate_key "$DIR/account.key"
-
   # Create the folder for domains configuration
   mkdir -p "$DIR/domains/"
 
@@ -159,32 +192,13 @@ function do_init(){
   exit 0
 }
 function do_add(){
-  local DOMAIN=$1
+  local DOMAIN
+  DOMAIN=$1
   trap noisy_fail EXIT
 
-  # Create the folder
+  # Create the folder if needed
   mkdir -p "$DIR/domains/$DOMAIN"
 
-  # Generate domain key
-  echo "Generate domain key..." >&2
-  generate_key "$DIR/domains/$DOMAIN/domain.key"
-
-  # Generate CSR
-  echo "Generate CSR..." >&2
-  openssl req -new -sha256 -key "$DIR/domains/$DOMAIN/domain.key" -subj "/CN=$DOMAIN" > "$DIR/domains/$DOMAIN/domain.csr"
-
-  # Get the certificate
-  echo "Request certificate..." >&2
-  renew_domaincert "$DOMAIN" "noisy" || exit 10
-  
-  echo "SUCCESS! (remark: we did NOT notify the webserver of the new certificate)" >&2
-  trap - EXIT
-  exit 0
-}
-function do_forcerenew(){
-  local DOMAIN=$1
-  trap noisy_fail EXIT
-  
   # Get the certificate
   echo "Request certificate..." >&2
   renew_domaincert "$DOMAIN" "noisy" || exit 10
@@ -196,6 +210,7 @@ function do_forcerenew(){
 function do_user_refresh(){
   if [[ "$NBRENEWED" -gt "0" ]]; then # At least 1 certificate renewed
     type -t "apply_new_cert" 2>/dev/null | grep -q 'function' # grep -q returns 0 if there is a match
+    # shellcheck disable=SC2181
     if [[ "$?" -eq "0" ]]; then
       apply_new_cert
       exit $?
@@ -214,14 +229,18 @@ function print_usage(){
 # Configuration file validation
 if [[ ! -f "$DIR/config.sh" ]]; then
   echo "Missing config.sh! You must create it before using this script." >&2
-  echo -e "\nSample file:\n-----------------------------------\n# This should be the webroot for challenges. If you don't rewrite URLs it should contain /.well-known/acme-challenge/ (and these folders should exist)\nWELLKNOWNROOT=/www/challenges/shared/.well-known/acme-challenge/\n\n# (optional) This is the function to be called if at least one certificate has been changed (renew, renew-all only)\nfunction apply_new_cert(){\n  # SIGHUP nginx\n  kill -HUP \$( cat /run/nginx.pid )\n}\n-----------------------------------\n"
+  echo -e "\nSample file:\n-----------------------------------\n# This should be the webroot for challenges. If you don't rewrite URLs it should contain /.well-known/acme-challenge/ (and these folders should exist)\nWELLKNOWNROOT=/acme/shared/.well-known/acme-challenge/\n\n# (optional) This is the function to be called if at least one certificate has been changed (renew, renew-all only)\nfunction apply_new_cert(){\n  # SIGHUP nginx\n  kill -HUP \$( cat /run/nginx.pid )\n}\n-----------------------------------\n"
   exit 1
 fi
+# shellcheck source=/dev/null
 source "$DIR/config.sh"
 if [[ ! -d "$WELLKNOWNROOT" ]]; then
   echo "The WELLKNOWNROOT path listed in config.sh does not exist!" >&2
   exit 1
 fi
+
+# Delete the previous account key, if any
+rm -f "$DIR/account.key-tmp"
 
 # Command line parsing
 case "$1" in
@@ -279,13 +298,13 @@ case "$1" in
     
   ## "Noisy" commands (for humans) ##
   
-  "init") 
-    # Account key already exists
-    if [[ -f "$DIR/account.key" ]]; then
-      echo "You already have an account key!" >&2
+  "init")
+    # acme_tiny.py already exists
+    if [[ -f "$DIR/acme_tiny.py" ]]; then
+      echo "Already done!" >&2
       exit 1
     fi
-    
+
     do_init
     ;;
     
@@ -318,7 +337,7 @@ case "$1" in
       exit 1
     fi
     
-    do_forcerenew "$2"
+    do_add "$2"
     ;;
     
   "help")
