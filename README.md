@@ -93,6 +93,9 @@ Side note: for `ssl_dhparam` you can use `openssl dhparam -out /acme/dhparam.pem
 Restart Nginx and verify all is fine. 
 You can use Qualys SSLTest service to verify the grade for your server: https://www.ssllabs.com/ssltest/
 
+
+# Renewal management
+
 ## Automatically renew certificates
 
 Remember to schedule a cronjob on `root` that calls `/acme/acme-tiny-auto.sh renew-all`.
@@ -108,9 +111,7 @@ For Nginx, the following usually works well: `kill -HUP $( cat /run/nginx.pid )`
 
 ## Stop renewing certificates for a domain
 
-You can put an empty "do_not_renew" file in the domain folder.
-
-e.g.
+To just let the current certificate expire, and not attempt to renew it, you can put an empty "do_not_renew" file in the domain folder. e.g.
 ```
 touch /acme/domains/example.com/do_not_renew
 ```

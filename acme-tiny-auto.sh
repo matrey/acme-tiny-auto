@@ -5,6 +5,14 @@ DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 UMASK=$( umask -S )
 umask g=,o=
 
+function write_log(){
+  local MESSAGE
+  local DT
+  MESSAGE=$1
+  DT=$( date --iso-8601=seconds )
+  echo -e "time:${DT}\t${MESSAGE}" >> "$DIR/acme.log"
+}
+
 function noisy_fail(){
   echo "FAILED!" >&2
 }
@@ -88,6 +96,7 @@ function renew_domaincert(){
   RETVAL=$?
   umask g=,o=
   if [[ "$RETVAL" -ne "0" ]]; then
+    write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:acme_tiny exited with code ${RETVAL}"
     noisy_write "acme_tiny.py exited with code ${RETVAL}!" "$NOISY"
     return 1
   fi
@@ -96,6 +105,7 @@ function renew_domaincert(){
   openssl x509 -inform PEM -in "$DIR/domains/$DOMAIN/new.crt" -noout 2>/dev/null
   # shellcheck disable=SC2181
   if [[ "$?" -ne "0" ]]; then
+    write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:invalid certificate"
     noisy_write "The payload we got back is not a certificate!" "$NOISY"
     return 1
   fi
@@ -104,6 +114,7 @@ function renew_domaincert(){
   openssl verify -untrusted "$DIR/intermediate.crt" "$DIR/domains/$DOMAIN/new.crt" >/dev/null
   # shellcheck disable=SC2181
   if [[ "$?" -ne "0" ]]; then # This is not the intermediate we expected!
+    write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:unexpected intermediate"
     noisy_write "The certificate we got back is not signed by the expected intermediate!" "$NOISY"
     return 1
   fi
@@ -112,6 +123,7 @@ function renew_domaincert(){
   cat "$DIR/domains/$DOMAIN/new.key" > "$DIR/domains/$DOMAIN/domain.key"
   cat "$DIR/domains/$DOMAIN/new.crt" > "$DIR/domains/$DOMAIN/domain.crt"
   rm -f "$DIR/domains/$DOMAIN/domain.csr"
+  write_log "action:renew\tstatus:OK\tdomain:${DOMAIN}"
   
   # Increment the counter of renewed certificates
   NBRENEWED=$(( NBRENEWED + 1 ))
@@ -213,7 +225,13 @@ function do_user_refresh(){
     # shellcheck disable=SC2181
     if [[ "$?" -eq "0" ]]; then
       apply_new_cert
-      exit $?
+      RETVAL="$?"
+      if [[ "$RETVAL" -eq "0" ]]; then
+        write_log "action:reload\tstatus:OK"
+      else
+        write_log "action:reload\tstatus:KO\tcode:${RETVAL}"
+      fi
+      exit "$RETVAL"
     fi
   fi
   exit 0
@@ -260,6 +278,8 @@ case "$1" in
       exit 1
     fi
     
+    write_log "action:renew\tdomain:$2\ttype:ping"
+    
     # We expect to have an existing certificate (would be weird otherwise... not a normal case for automatic jobs)
     is_cert "$DIR/domains/$2/domain.crt" || exit 20
     # Check if the certificate is still valid long enough
@@ -277,6 +297,8 @@ case "$1" in
     IFS=$'\n'
     DOMS=($( find "${DIR}/domains/" -maxdepth 1 -type d -exec basename {} \; | grep -v ^domains$ ))
     IFS=$OLDIFS
+  
+    write_log "action:renew-all\ttype:ping"
     
     # For each domain check if there is a do_not_renew file
     for DOM in "${DOMS[@]}"; do
