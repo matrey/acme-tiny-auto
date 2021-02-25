@@ -91,11 +91,9 @@ function renew_domaincert(){
   fi
   
   # Generate a new domain key
-  echo "Generate domain key..." >&2
   generate_key "$DIR/domains/$DOMAIN/new.key" 2048
 
   # Generate CSR
-  echo "Generate CSR..." >&2
   openssl req -new -sha256 -key "$DIR/domains/$DOMAIN/new.key" -subj "/CN=$DOMAIN" > "$DIR/domains/$DOMAIN/domain.csr"
   
   # Call acme_tiny
