@@ -86,7 +86,7 @@ Go get proper settings from https://mozilla.github.io/server-side-tls/ssl-config
 In the generated code, remember to edit:
 * `ssl_certificate` set to `/acme/domains/example.com/domain.crt`
 * `ssl_certificate_key` set to `/acme/domains/example.com/domain.key`
-* `ssl_trusted_certificate` set to `/acme/ocsp.crt`
+* `ssl_trusted_certificate` set to `/acme/domains/example.com/ocsp.crt`
 
 Side note: for `ssl_dhparam` you can use `openssl dhparam -out /acme/dhparam.pem 2048` to generate the file under `/acme/dhparam.pem`
 

@@ -113,25 +113,44 @@ function renew_domaincert(){
     return 1
   fi
 
-  # Verify the certificate is valid
-  openssl x509 -inform PEM -in "$DIR/domains/$DOMAIN/new.crt" -noout 2>/dev/null
-  # shellcheck disable=SC2181
-  if [[ "$?" -ne "0" ]]; then
-    write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:invalid certificate"
-    noisy_write "The payload we got back is not a certificate!" "$NOISY"
+  # We should have the certificate + its intermediate in "$DIR/domains/$DOMAIN/new.crt"
+
+  # Let's isolate the intermediate
+  for cert in $( cat "$DIR/domains/$DOMAIN/new.crt" | sed -e 's/^-----.*$/###/' | tr -d '\n\r\t ' | sed -e 's/#/\n/g' | grep -v '^$' ); do
+    is_intermediate=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert}\n-----END CERTIFICATE-----" ) -noout -purpose | grep 'SSL client CA' | grep Yes | wc -l )
+    if [[ "${is_intermediate}" -eq "1" ]]; then
+      cert_int=${cert}
+    else
+      cert_leaf=${cert}
+    fi
+  done
+
+  # Get root cert from intermediate's CA Issuers
+  # TODO: only supports PKCS7 as currently used by DST root
+  root_url=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) -text -noout | grep 'CA Issuers' | sed -e 's/^.*URI://' )
+  root_format=$( echo "${root_url}" | tr -d '\r\n\t '| tail -c 3 )
+
+  if [[ "${root_format:0:2}" == "p7" ]]; then
+    cert_root=$( openssl pkcs7 -inform der -in <( curl -Ss "${root_url}" ) -print_certs | grep -v -e '^subject' -e '^issuer' )
+  else
+    write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:bad root"
+    noisy_write "Failed to identify the format of the root certificate" "$NOISY"
     return 1
   fi
 
-  # Also that it is issued by the expected intermediate
-  openssl verify -untrusted "$DIR/intermediate.crt" "$DIR/domains/$DOMAIN/new.crt" >/dev/null
-  # shellcheck disable=SC2181
-  if [[ "$?" -ne "0" ]]; then # This is not the intermediate we expected!
-    write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:unexpected intermediate"
-    noisy_write "The certificate we got back is not signed by the expected intermediate!" "$NOISY"
+  # Verify the chain
+  openssl verify -CAfile <( echo "${cert_root}" ) -untrusted <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_leaf}\n-----END CERTIFICATE-----" ) > /dev/null 2>/dev/null
+  if [[ "$?" -ne 0 ]]; then
+    write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:bad chain"
+    noisy_write "Failed to validate the CA / int / leaf certificate chain" "$NOISY"
     return 1
   fi
 
-  # If all is good, we can replace the current private key and certificate
+  # If we are here, we can make the OCSP bundle
+  openssl x509 -in <( echo "${cert_root}" ) > "$DIR/domains/$DOMAIN/ocsp.crt"
+  openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) >> "$DIR/domains/$DOMAIN/ocsp.crt"
+
+  # And replace the current private key and certificate
   cat "$DIR/domains/$DOMAIN/new.key" > "$DIR/domains/$DOMAIN/domain.key"
   cat "$DIR/domains/$DOMAIN/new.crt" > "$DIR/domains/$DOMAIN/domain.crt"
   rm -f "$DIR/domains/$DOMAIN/domain.csr"
@@ -165,25 +184,13 @@ function generate_key(){
 # Helpers: external downloads
 # ---------------------------
 
-function download_cert(){ 
-  local URL
-  local FINGERPRINT
-  local TARGET
-  URL=$1
-  FINGERPRINT=$2
-  TARGET=$3
-  curl -Ss "$URL" > "${TARGET}.tmp"
-  is_cert "${TARGET}.tmp" || exit 10
-  is_cert_fingerprint "${TARGET}.tmp" "$FINGERPRINT" || exit 10
-  mv "${TARGET}.tmp" "$TARGET"
-}
 function download_acme_tiny(){
   local TARGET
   local SHASUM
   TARGET=$1
-  curl -Ss "https://raw.githubusercontent.com/diafygi/acme-tiny/5350420d35177eda733d85096433a24e55f8d00e/acme_tiny.py" > "${TARGET}.tmp"
+  curl -Ss "https://raw.githubusercontent.com/diafygi/acme-tiny/58752c527c9345d23a771d2a93f729aaa8fe7712/acme_tiny.py" -o "${TARGET}.tmp"
   SHASUM=$( sha256sum "${TARGET}.tmp" | cut -f1 -d' ' )
-  if [[ "$SHASUM" != "ce2cdd1cd5a51545df6436db641f1f1055acc6cc33c44819f8085d2653ba359a" ]]; then
+  if [[ "$SHASUM" != "644c73397d45b95ddc74eb793d8fa8a7ffb49784f01d1c04d546d7c653b9a4f1" ]]; then
     exit 10
   fi
   mv "${TARGET}.tmp" "$TARGET"
@@ -194,15 +201,6 @@ function download_acme_tiny(){
 
 function do_init(){
   trap noisy_fail EXIT
-
-  # Get root and intermediate certificates
-  echo "Download root certificate..." >&2
-  download_cert "https://letsencrypt.org/certs/isrgrootx1.pem.txt" "96:BC:EC:06:26:49:76:F3:74:60:77:9A:CF:28:C5:A7:CF:E8:A3:C0:AA:E1:1A:8F:FC:EE:05:C0:BD:DF:08:C6" "$DIR/ca.crt"
-  echo "Download intermediate certificate..." >&2
-  download_cert "https://letsencrypt.org/certs/lets-encrypt-x3-cross-signed.pem.txt" "25:84:7D:66:8E:B4:F0:4F:DD:40:B1:2B:6B:07:40:C5:67:DA:7D:02:43:08:EB:6C:2C:96:FE:41:D9:DE:21:8D" "$DIR/intermediate.crt"
-
-  # Make bundle for OCSP stapling
-  cat "$DIR/ca.crt" "$DIR/intermediate.crt" > "$DIR/ocsp.crt"
 
   # Get acme-tiny
   echo "Download acme_tiny.py..." >&2
