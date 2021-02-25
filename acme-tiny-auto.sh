@@ -1,6 +1,18 @@
 #!/bin/bash
 DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 
+for pytry in python python3 python2; do
+  if command -v "$pytry" &> /dev/null; then 
+    PYTHONEXEC=$pytry
+    break
+  fi
+done
+
+if [[ -z "$PYTHONEXEC" ]]; then
+  echo "Missing Python!" >&2
+  exit 1
+fi
+
 # Set restrictive umask, but keep a copy of the old one to be able to reapply it when calling acme_tiny.py
 UMASK=$( umask -S )
 umask g=,o=
@@ -89,9 +101,9 @@ function renew_domaincert(){
   # Call acme_tiny
   umask "$UMASK"
   if [[ "$NOISY" == "noisy" ]]; then
-    python "$DIR/acme_tiny.py" --account-key "$DIR/account.key-tmp" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
+    $PYTHONEXEC "$DIR/acme_tiny.py" --account-key "$DIR/account.key-tmp" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
   else
-    python "$DIR/acme_tiny.py" --quiet --account-key "$DIR/account.key-tmp" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" 2>/dev/null > "$DIR/domains/$DOMAIN/new.crt"
+    $PYTHONEXEC "$DIR/acme_tiny.py" --quiet --account-key "$DIR/account.key-tmp" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" 2>/dev/null > "$DIR/domains/$DOMAIN/new.crt"
   fi
   RETVAL=$?
   umask g=,o=
