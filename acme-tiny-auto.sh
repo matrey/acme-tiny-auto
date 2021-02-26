@@ -138,8 +138,8 @@ function renew_domaincert(){
     # No CA Issuers (e.g. Buypass), need to find the root another way, based on issuer CN
     int_issuer=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) -issuer -noout | sed -e 's/^issuer= //' )
     if [[ "${int_issuer}" == "/C=NO/O=Buypass AS-983163327/CN=Buypass Class 2 Root CA" ]]; then
-      root_url="https://crt.sh/?d=767142"
-      root_format=pem
+      root_url="http://crt.buypass.no/crt/BPClass2Rot.cer"
+      root_format=der
     else
       write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:unknown root"
       noisy_write "Failed to identify the location of the root certificate" "$NOISY"
@@ -150,6 +150,8 @@ function renew_domaincert(){
   # TODO: only supports PKCS7 as currently used by DST root
   if [[ "${root_format:0:2}" == "p7" ]]; then # convert from PKCS7
     cert_root=$( openssl pkcs7 -inform der -in <( curl -Ss "${root_url}" ) -print_certs | grep -v -e '^subject' -e '^issuer' )
+  elif [[ "${root_format}" == "der" ]]; then # need der to pem
+    cert_root=$( openssl x509 -inform der -in <( curl -Ss "${root_url}" ) )
   elif [[ "${root_format}" == "pem" ]]; then # ready to use pem
     cert_root=$( openssl x509 -in <( curl -Ss "${root_url}" ) )
   else
