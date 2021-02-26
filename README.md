@@ -1,5 +1,5 @@
 # acme-tiny-auto
-Bash wrapper for acme_tiny.py. It helps you procure Let's Encrypt certificates in a few commands, renew them automatically, and it should not break your server if anything fails during renewal.
+Bash wrapper for acme_tiny.py. It helps you procure Let's Encrypt or Buypass certificates (single domain only, HTTP-01 validation only) in a few commands, renew them automatically, and it should not break your server if anything fails during renewal.
 
 ```
 Usage: ./acme-tiny-auto.sh [init | add [domain]| renew [domain] | force-renew [domain] | renew-all ]
@@ -48,6 +48,10 @@ chmod +x acme-tiny-auto.sh
 
 It will ask you to create a `config.sh` file, and offers the following template:
 ```
+# Provider: either "letsencrypt" or "buypass". For buypass you must provide an email address.
+ACMEPROVIDER=buypass
+ACMECONTACTEMAIL=nobody@example.com
+
 # This should be the webroot for challenges. If you don't rewrite URLs it should contain /.well-known/acme-challenge/ (and these folders should exist)
 WELLKNOWNROOT=/acme/shared/.well-known/acme-challenge/
 
@@ -73,8 +77,9 @@ cd /acme
 ./acme-tiny-auto.sh add example.com
 ```
 If all goes well, we end up with:
-* `/acme/domains/example.com/domain.crt` the signed certificate from Let's Encrypt
+* `/acme/domains/example.com/domain.crt` the signed certificate and intermediate from Let's Encrypt
 * `/acme/domains/example.com/domain.key` the private key
+* `/acme/domains/example.com/ocsp.crt` the bundle for OCSP stapling (root CA + intermediate)
 
 Then we need to edit this host's Nginx configuration.
 
