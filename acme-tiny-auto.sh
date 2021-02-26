@@ -98,11 +98,17 @@ function renew_domaincert(){
   
   # Call acme_tiny
   umask "$UMASK"
-  if [[ "$NOISY" == "noisy" ]]; then
-    $PYTHONEXEC "$DIR/acme_tiny.py" --account-key "$DIR/account.key-tmp" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" > "$DIR/domains/$DOMAIN/new.crt"
-  else
-    $PYTHONEXEC "$DIR/acme_tiny.py" --quiet --account-key "$DIR/account.key-tmp" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" 2>/dev/null > "$DIR/domains/$DOMAIN/new.crt"
+
+  ARGSMORE=()
+  if [[ "$NOISY" != "noisy" ]]; then
+    ARGSMORE+=( --quiet )
   fi
+  if [[ "$ACMEPROVIDER" == "buypass" ]]; then
+    ARGSMORE+=( --contact "mailto:${ACMECONTACTEMAIL}" --directory-url 'https://api.buypass.com/acme/directory' )
+  fi
+
+  $PYTHONEXEC "$DIR/acme_tiny.py" --account-key "$DIR/account.key-tmp" --csr "$DIR/domains/$DOMAIN/domain.csr" --acme-dir "$WELLKNOWNROOT" "${ARGSMORE[@]}" > "$DIR/domains/$DOMAIN/new.crt"
+
   RETVAL=$?
   umask g=,o=
   if [[ "$RETVAL" -ne "0" ]]; then
@@ -124,12 +130,28 @@ function renew_domaincert(){
   done
 
   # Get root cert from intermediate's CA Issuers
-  # TODO: only supports PKCS7 as currently used by DST root
   root_url=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) -text -noout | grep 'CA Issuers' | sed -e 's/^.*URI://' )
-  root_format=$( echo "${root_url}" | tr -d '\r\n\t '| tail -c 3 )
+  if [[ "${root_url}" != "" ]]; then
+    # Assume certificate format from extension
+    root_format=$( echo "${root_url}" | tr -d '\r\n\t '| tail -c 3 )
+  else
+    # No CA Issuers (e.g. Buypass), need to find the root another way, based on issuer CN
+    int_issuer=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) -issuer -noout | sed -e 's/^issuer= //' )
+    if [[ "${int_issuer}" == "/C=NO/O=Buypass AS-983163327/CN=Buypass Class 2 Root CA" ]]; then
+      root_url="https://crt.sh/?d=767142"
+      root_format=pem
+    else
+      write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:unknown root"
+      noisy_write "Failed to identify the location of the root certificate" "$NOISY"
+      return 1
+    fi
+  fi
 
-  if [[ "${root_format:0:2}" == "p7" ]]; then
+  # TODO: only supports PKCS7 as currently used by DST root
+  if [[ "${root_format:0:2}" == "p7" ]]; then # convert from PKCS7
     cert_root=$( openssl pkcs7 -inform der -in <( curl -Ss "${root_url}" ) -print_certs | grep -v -e '^subject' -e '^issuer' )
+  elif [[ "${root_format}" == "pem" ]]; then # ready to use pem
+    cert_root=$( openssl x509 -in <( curl -Ss "${root_url}" ) )
   else
     write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:bad root"
     noisy_write "Failed to identify the format of the root certificate" "$NOISY"
@@ -191,6 +213,10 @@ function download_acme_tiny(){
   if [[ "$SHASUM" != "644c73397d45b95ddc74eb793d8fa8a7ffb49784f01d1c04d546d7c653b9a4f1" ]]; then
     exit 10
   fi
+
+  # Patch the code to make it work with buypass
+  sed -i 's@^    reg_payload = {"termsOfServiceAgreed": True}$@    # Patched by acme_tiny_auto according to https://github.com/diafygi/acme-tiny/issues/241\n    reg_payload = {"termsOfServiceAgreed": True}\n    if contact is not None:\n        reg_payload = {"termsOfServiceAgreed": True, "contact": contact}@' "${TARGET}.tmp"
+
   mv "${TARGET}.tmp" "$TARGET"
 }
 
@@ -255,7 +281,24 @@ function print_usage(){
 # Configuration file validation
 if [[ ! -f "$DIR/config.sh" ]]; then
   echo "Missing config.sh! You must create it before using this script." >&2
-  echo -e "\nSample file:\n-----------------------------------\n# This should be the webroot for challenges. If you don't rewrite URLs it should contain /.well-known/acme-challenge/ (and these folders should exist)\nWELLKNOWNROOT=/acme/shared/.well-known/acme-challenge/\n\n# (optional) This is the function to be called if at least one certificate has been changed (renew, renew-all only)\nfunction apply_new_cert(){\n  # SIGHUP nginx\n  kill -HUP \$( cat /run/nginx.pid )\n}\n-----------------------------------\n"
+  cat <<- "EOF"
+Sample file:
+-----------------------------------
+# Provider: either "letsencrypt" or "buypass". For buypass you must also provide an email address (not used with letsencrypt).
+ACMEPROVIDER=buypass
+ACMECONTACTEMAIL=nobody@example.com
+
+# This should be the webroot for challenges. If you don't rewrite URLs it should contain /.well-known/acme-challenge/ (and these folders should exist)
+WELLKNOWNROOT=/acme/shared/.well-known/acme-challenge/
+
+# (optional) This is the function to be called if at least one certificate has been changed (renew, renew-all only)
+function apply_new_cert(){
+  # SIGHUP nginx
+  kill -HUP $( cat /run/nginx.pid )
+}
+-----------------------------------
+EOF
+
   exit 1
 fi
 # shellcheck source=/dev/null
@@ -264,9 +307,17 @@ if [[ ! -d "$WELLKNOWNROOT" ]]; then
   echo "The WELLKNOWNROOT path listed in config.sh does not exist!" >&2
   exit 1
 fi
-
-# Delete the previous account key, if any
-rm -f "$DIR/account.key-tmp"
+if [[ "${ACMEPROVIDER:-}" == "letsencrypt" ]]; then
+  :
+elif [[ "${ACMEPROVIDER:-}" == "buypass" ]]; then
+  if [[ -z "${ACMECONTACTEMAIL}" || "${ACMECONTACTEMAIL}" == "nobody@example.com" ]]; then
+    echo "For buypass you must provide a valid email address!" >&2
+    exit 1
+  fi
+else
+  echo "You must configure ACMEPROVIDER=buypass or ACMEPROVIDER=letsencrypt" >&2
+  exit 1
+fi
 
 # Command line parsing
 case "$1" in
