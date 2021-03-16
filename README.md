@@ -42,6 +42,7 @@ Restart Nginx.
 ```
 cd /acme
 wget https://raw.githubusercontent.com/matrey/acme-tiny-auto/master/acme-tiny-auto.sh
+# wget https://gitee.com/matrey/acme-tiny-auto/raw/master/acme-tiny-auto.sh # (from China)
 chmod +x acme-tiny-auto.sh
 ./acme-tiny-auto.sh
 ```
@@ -66,6 +67,7 @@ Save these lines under `/acme/config.sh` and ensure `WELLKNOWNROOT` is correct (
 Then we initialize the environment (download root certs from Let's Encrypt, download acme_tiny.py, etc.)
 ```
 ./acme-tiny-auto.sh init
+# VENDORED=1 ./acme-tiny-auto.sh init # (from China)
 ```
 Verify all went fine.
 

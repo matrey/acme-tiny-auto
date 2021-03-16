@@ -210,7 +210,11 @@ function download_acme_tiny(){
   local TARGET
   local SHASUM
   TARGET=$1
-  curl -Ss "https://raw.githubusercontent.com/diafygi/acme-tiny/58752c527c9345d23a771d2a93f729aaa8fe7712/acme_tiny.py" -o "${TARGET}.tmp"
+  local DLURL=https://raw.githubusercontent.com/diafygi/acme-tiny/58752c527c9345d23a771d2a93f729aaa8fe7712/acme_tiny.py
+  if [[ "${VENDORED:-}" -eq 1 ]]; then
+    DLURL=https://gitee.com/matrey/acme-tiny-auto/raw/1d4c8a8bc25c5290f8566ceebfc8a559493067f5/vendor/acme_tiny.py
+  fi
+  curl -Ss "$DLURL" -o "${TARGET}.tmp"
   SHASUM=$( sha256sum "${TARGET}.tmp" | cut -f1 -d' ' )
   if [[ "$SHASUM" != "644c73397d45b95ddc74eb793d8fa8a7ffb49784f01d1c04d546d7c653b9a4f1" ]]; then
     exit 10
