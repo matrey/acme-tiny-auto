@@ -121,7 +121,7 @@ function renew_domaincert(){
 
   # Let's isolate the intermediate
   for cert in $( cat "$DIR/domains/$DOMAIN/new.crt" | sed -e 's/^-----.*$/###/' | tr -d '\n\r\t ' | sed -e 's/#/\n/g' | grep -v '^$' ); do
-    is_intermediate=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert}\n-----END CERTIFICATE-----" ) -noout -purpose | grep 'SSL client CA' | grep Yes | wc -l )
+    is_intermediate=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert}\n-----END CERTIFICATE-----" | fold -w64 ) -noout -purpose | grep 'SSL client CA' | grep Yes | wc -l )
     if [[ "${is_intermediate}" -eq "1" ]]; then
       cert_int=${cert}
     else
@@ -130,13 +130,13 @@ function renew_domaincert(){
   done
 
   # Get root cert from intermediate's CA Issuers
-  root_url=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) -text -noout | grep 'CA Issuers' | sed -e 's/^.*URI://' )
+  root_url=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" | fold -w64 ) -text -noout | grep 'CA Issuers' | sed -e 's/^.*URI://' )
   if [[ "${root_url}" != "" ]]; then
     # Assume certificate format from extension
     root_format=$( echo "${root_url}" | tr -d '\r\n\t '| tail -c 3 )
   else
     # No CA Issuers (e.g. Buypass), need to find the root another way, based on issuer CN
-    int_issuer=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) -issuer -noout | sed -e 's/^issuer= //' )
+    int_issuer=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" | fold -w64 ) -issuer -noout | sed -e 's/^issuer= //' )
     if [[ "${int_issuer}" == "/C=NO/O=Buypass AS-983163327/CN=Buypass Class 2 Root CA" ]]; then
       root_url="http://crt.buypass.no/crt/BPClass2Rot.cer"
       root_format=der
@@ -161,7 +161,7 @@ function renew_domaincert(){
   fi
 
   # Verify the chain
-  openssl verify -CAfile <( echo "${cert_root}" ) -untrusted <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_leaf}\n-----END CERTIFICATE-----" ) > /dev/null 2>/dev/null
+  openssl verify -CAfile <( echo "${cert_root}" ) -untrusted <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" | fold -w64 ) <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_leaf}\n-----END CERTIFICATE-----" | fold -w64 ) > /dev/null 2>/dev/null
   if [[ "$?" -ne 0 ]]; then
     write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:bad chain"
     noisy_write "Failed to validate the CA / int / leaf certificate chain" "$NOISY"
@@ -170,7 +170,7 @@ function renew_domaincert(){
 
   # If we are here, we can make the OCSP bundle
   openssl x509 -in <( echo "${cert_root}" ) > "$DIR/domains/$DOMAIN/ocsp.crt"
-  openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" ) >> "$DIR/domains/$DOMAIN/ocsp.crt"
+  openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" | fold -w64 ) >> "$DIR/domains/$DOMAIN/ocsp.crt"
 
   # And replace the current private key and certificate
   cat "$DIR/domains/$DOMAIN/new.key" > "$DIR/domains/$DOMAIN/domain.key"
