@@ -118,50 +118,113 @@ function renew_domaincert(){
   fi
 
   # We should have the certificate + its intermediate in "$DIR/domains/$DOMAIN/new.crt"
+  # Note that there might be several intermediates
+  certs_int=()
 
-  # Let's isolate the intermediate
+  # Let's isolate the intermediates from the leaf cert
   for cert in $( cat "$DIR/domains/$DOMAIN/new.crt" | sed -e 's/^-----.*$/###/' | tr -d '\n\r\t ' | sed -e 's/#/\n/g' | grep -v '^$' ); do
-    is_intermediate=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert}\n-----END CERTIFICATE-----" | fold -w64 ) -noout -purpose | grep 'SSL client CA' | grep Yes | wc -l )
+    formatted_cert=$( echo -e "-----BEGIN CERTIFICATE-----\n${cert}\n-----END CERTIFICATE-----" | fold -w64 )
+    is_intermediate=$( openssl x509 -in <( echo "${formatted_cert}" ) -noout -purpose | grep 'SSL client CA' | grep Yes | wc -l )
     if [[ "${is_intermediate}" -eq "1" ]]; then
-      cert_int=${cert}
+      certs_int+=("${formatted_cert}")
     else
-      cert_leaf=${cert}
+      cert_leaf=${formatted_cert}
     fi
   done
 
-  # Get root cert from intermediate's CA Issuers
-  root_url=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" | fold -w64 ) -text -noout | grep 'CA Issuers' | sed -e 's/^.*URI://' )
-  if [[ "${root_url}" != "" ]]; then
-    # Assume certificate format from extension
-    root_format=$( echo "${root_url}" | tr -d '\r\n\t '| tail -c 3 )
-  else
-    # No CA Issuers (e.g. Buypass), need to find the root another way, based on issuer CN
-    int_issuer=$( openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" | fold -w64 ) -issuer -noout | sed -e 's/^issuer= //' )
-    if [[ "${int_issuer}" == "/C=NO/O=Buypass AS-983163327/CN=Buypass Class 2 Root CA" ]]; then
-      root_url="http://crt.buypass.no/crt/BPClass2Rot.cer"
-      root_format=der
-    else
-      write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:unknown root"
-      noisy_write "Failed to identify the location of the root certificate" "$NOISY"
-      return 1
-    fi
-  fi
+  # We need the root CA cert for OCSP stapling
+  # Given that the OCSP bundle seems to act like a trust store, it should be fine if we pass several roots
+  # We hardcode them as they are a very slow changing dimension
 
-  # TODO: only supports PKCS7 as currently used by DST root
-  if [[ "${root_format:0:2}" == "p7" ]]; then # convert from PKCS7
-    cert_root=$( openssl pkcs7 -inform der -in <( curl -Ss "${root_url}" ) -print_certs | grep -v -e '^subject' -e '^issuer' )
-  elif [[ "${root_format}" == "der" ]]; then # need der to pem
-    cert_root=$( openssl x509 -inform der -in <( curl -Ss "${root_url}" ) )
-  elif [[ "${root_format}" == "pem" ]]; then # ready to use pem
-    cert_root=$( openssl x509 -in <( curl -Ss "${root_url}" ) )
-  else
-    write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:bad root"
-    noisy_write "Failed to identify the format of the root certificate" "$NOISY"
-    return 1
-  fi
+  certs_root=()
+
+  # ISRG X1
+  # https://letsencrypt.org/certs/isrgrootx1.pem (pem)
+  certs_root+=('-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----')
+
+  # ISRG X2
+  # https://letsencrypt.org/certs/isrg-root-x2.pem (pem)
+  certs_root+=('-----BEGIN CERTIFICATE-----
+MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw
+CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg
+R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00
+MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT
+ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw
+EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW
++1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9
+ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T
+AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI
+zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW
+tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1
+/q4AaOeMSQ+2b1tbFfLn
+-----END CERTIFICATE-----')
+
+  # Buypass
+  # http://crt.buypass.no/crt/BPClass2Rot.cer (der)
+  certs_root+=('-----BEGIN CERTIFICATE-----
+MIIFWTCCA0GgAwIBAgIBAjANBgkqhkiG9w0BAQsFADBOMQswCQYDVQQGEwJOTzEd
+MBsGA1UECgwUQnV5cGFzcyBBUy05ODMxNjMzMjcxIDAeBgNVBAMMF0J1eXBhc3Mg
+Q2xhc3MgMiBSb290IENBMB4XDTEwMTAyNjA4MzgwM1oXDTQwMTAyNjA4MzgwM1ow
+TjELMAkGA1UEBhMCTk8xHTAbBgNVBAoMFEJ1eXBhc3MgQVMtOTgzMTYzMzI3MSAw
+HgYDVQQDDBdCdXlwYXNzIENsYXNzIDIgUm9vdCBDQTCCAiIwDQYJKoZIhvcNAQEB
+BQADggIPADCCAgoCggIBANfHXvfBB9R3+0Mh9PT1aeTuMgHbo4Yf5FkNuud1g1Lr
+6hxhFUi7HQfKjK6w3Jad6sNgkoaCKHOcVgb/S2TwDCo3SbXlzwx87vFKu3MwZfPV
+L4O2fuPn9Z6rYPnT8Z2SdIrkHJasW4DptfQxh6NR/Md+oW+OU3fUl8FVM5I+GC91
+1K2GScuVr1QGbNgGE41b/+EmGVnAJLqBcXmQRFBoJJRfuLMR8SlBYaNByyM21cHx
+MlAQTn/0hpPshNOOvEu/XAFOBz3cFIqUCqTqc/sLUegTBxj6DvEr0VQVfTzh97QZ
+QmdiXnfgolXsttlpF9U6r0TtSsWe5HonfOV116rLJeffawrbD02TTqigzXsu8lkB
+arcNuAeBfos4GzjmCleZPe4h6KP1DBbdi+w0jpwqHAAVF41og9JwnxgIzRFo1clr
+Us3ERo/ctfPYV3Me6ZQ5BL/T3jjetFPsaRyifsSP5BtwrfKi+fv3FmRmaZ9JUaLi
+FRhnBkp/1Wy1TbMz4GHrXb7pmA8y1x1LPC5aAVKRCfLf6o3YBkBjqhHk/sM3nhRS
+P/TizPJhk9H9Z2vXUq6/aKtAQ6BXNVN48FP4YUIHZMbXb5tMOA1jrGKvNouicwoN
+9SG9dKpN6nIDSdvHXx1iY8f93ZHsM+71bbRuMGjeyNYmsHVee7QHIJihdjK4TWxP
+AgMBAAGjQjBAMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFMmAd+BikoL1Rpzz
+uvdMw964o605MA4GA1UdDwEB/wQEAwIBBjANBgkqhkiG9w0BAQsFAAOCAgEAU18h
+9bqwOlI5LJKwbADJ784g7wbylp7ppHR/ehb8t/W2+xUbP6umwHJdELFx7rxP462s
+A20ucS6vxOOto70MEae0/0qyexAQH6dXQbLArvQsWdZHEIjzIVEpMMpghq9Gqx3t
+OluwlN5E40EIosHsHdb9T7bWR9AUC8rmyrV7d35BH16Dx7aMOZawP5aBQW9gkOLo
++fsicdl9sz1Gv7SEr5AcD48Saq/v7h56rgJKihcrdv6sVIkkLE8/trKnToyokZf7
+KcZ7XC25y2a2t6hbElGFtQl+Ynhw/qlqYLYdDnkM/crqJIByw5c/8nerQyIKx+u2
+DISCLIBrQYoIwOula9+ZEsuK1V6ADJHgJgg2SMX6OBE1/yWDLfJ6v9r9jv6ly0Us
+H8SIU653DtmadsWOLB2jutXsMq7Aqqz30XpN69QH4kj3Io6wpJ9qzo6ysmD0oyLQ
+I+uUWnpp3Q+/QFesa1lQ2aOZ4W7+jQF5JyMV3pKdewlNWudLSDBaGOYKbeaP4NK7
+5t98biGCwWg5TbSYWGZizEqQXsP6JwSxeRV0mcy+rSDeJmAc61ZRpqPq5KM/p/9h
+3PFaTWwyI0PurKju7koSCTxdccK+efrCh2gdC/1cacwG0Jp9VJkqyTkaGa9LKkPz
+Y11aWOIv4x3kqdbQCtCev9eBCfHJxyYNrJgWVqA=
+-----END CERTIFICATE-----')
 
   # Verify the chain
-  openssl verify -CAfile <( echo "${cert_root}" ) -untrusted <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" | fold -w64 ) <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_leaf}\n-----END CERTIFICATE-----" | fold -w64 ) > /dev/null 2>/dev/null
+  openssl verify -CAfile <( for cert in "${certs_root[@]}"; do echo "$cert"; echo; done ) -untrusted <( for cert in "${certs_int[@]}"; do echo "$cert"; echo; done ) <( echo "${cert_leaf}" ) > /dev/null 2>/dev/null
   if [[ "$?" -ne 0 ]]; then
     write_log "action:renew\tstatus:KO\tdomain:${DOMAIN}\terror:bad chain"
     noisy_write "Failed to validate the CA / int / leaf certificate chain" "$NOISY"
@@ -169,8 +232,7 @@ function renew_domaincert(){
   fi
 
   # If we are here, we can make the OCSP bundle
-  openssl x509 -in <( echo "${cert_root}" ) > "$DIR/domains/$DOMAIN/ocsp.crt"
-  openssl x509 -in <( echo -e "-----BEGIN CERTIFICATE-----\n${cert_int}\n-----END CERTIFICATE-----" | fold -w64 ) >> "$DIR/domains/$DOMAIN/ocsp.crt"
+  ( for cert in "${certs_root[@]}"; do echo "$cert"; echo; done; for cert in "${certs_int[@]}"; do echo "$cert"; echo; done ) > "$DIR/domains/$DOMAIN/ocsp.crt"
 
   # And replace the current private key and certificate
   cat "$DIR/domains/$DOMAIN/new.key" > "$DIR/domains/$DOMAIN/domain.key"
